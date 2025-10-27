@@ -1,0 +1,84 @@
+import cv2
+import numpy as np
+import time
+
+# Load YOLOv3 model
+net = cv2.dnn.readNetFromDarknet('yolov3.cfg', 'yolov3.weights')
+
+# Load classes file
+classes = []
+with open('coco.names', 'r') as f:
+    classes = [line.strip() for line in f]
+
+# Create a blob from the input image
+def blobFromImage(img, scale=1j):
+    blob = cv2.dnn.blobFromImage(cv2.resize(img, (416, 416)), 1, (416, 416), 0, 1, 1, scale)
+    return blob
+
+# Perform object detection
+def do_object_detection(img, net, classes):
+    blob = blobFromImage(img)
+    net.setInput(blob)
+    output = net.forward()
+
+    height, width, _ = img.shape
+
+    for i in range(output.shape[2]):
+        confidence = output[0, i, 2]
+        if confidence > 0.5:  # Adjust confidence threshold as needed
+            class_id = np.argmax(output[0, i, :])
+            name = classes[class_id]
+            print(name)
+            # Get bounding box coordinates
+            box = output[0, i, :4]
+            x_center = box[0] * width
+            y_center = box[1] * height
+            w = box[2] * width
+            h = box[3] * height
+
+            # Calculate center of the bounding box
+            center_x = x_center + w / 2
+            center_y = y_center + h / 2
+
+            # Convert to robot coordinates (example - adjust to your robot's coordinate system)
+            # This is a placeholder, replace with your actual robot's coordinate conversion
+            robot_x = int(center_x - width / 2)
+            robot_y = int(center_y - height / 2)
+
+            print(f"Object detected at robot_x: {robot_x}, robot_y: {robot_y}")
+            # Add more logic here to instruct the robot to avoid the object
+            # Example:  "Move left" or "Move backward" based on the object's location
+            # For example:
+            # if robot_x < 0:
+            #     print("Move left")
+            # elif robot_x > width / 2:
+            #     print("Move right")
+            # else:
+            #    print("Move forward")
+
+
+# Load the image
+img = cv2.imread('image.jpg') # Replace 'image.jpg' with your image file
+if img is None:
+    print("Error: Could not read image.  Make sure 'image.jpg' is in the same directory.")
+    exit()
+
+# Main loop
+try:
+    while True:
+        # Perform object detection
+        do_object_detection(img, net, classes)
+
+        # Display the image
+        cv2.imshow('YOLO Object Detection', img)
+
+        # Exit on 'q' key press
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+except KeyboardInterrupt:
+    print("Program interrupted.")
+
+finally:
+    # Close the window
+    cv2.destroyAllWindows()

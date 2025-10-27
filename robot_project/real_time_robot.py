@@ -1,0 +1,276 @@
+import os
+os.environ['NUMPY_EXPERIMENTAL_ARRAY_FUNCTION'] = '0'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
+import cv2
+import numpy as np
+import serial
+import time
+import argparse
+from PIL import Image
+import tflite_runtime.interpreter as tflite
+    
+
+class RobotController:
+    def __init__(self, serial_port='/dev/ttyACM0', baud_rate=9600):
+        try:
+            self.serial_conn = serial.Serial(serial_port, baud_rate, timeout=1)
+            time.sleep(2)  # Wait for Arduino to reset
+            print(f"Connected to Arduino on {serial_port}")
+        except Exception as e:
+            print(f"Error connecting to Arduino: {e}")
+            print("If you're on Windows, try using 'COM3' (or another COM port)")
+            print("If you're on Linux, try using '/dev/ttyACM0' or '/dev/ttyUSB0'")
+            exit(1)
+
+    def send_command(self, command):
+        """Send a command to the Arduino"""
+        try:
+            self.serial_conn.write(command.encode())
+            time.sleep(0.05)  # Reduced delay for faster response
+        except Exception as e:
+            print(f"Error sending command: {e}")
+
+    def move_forward(self):
+        self.send_command("F\n")
+
+    def move_backward(self):
+        self.send_command("B\n")
+
+    def turn_left(self):
+        self.send_command("L\n")
+
+    def turn_right(self):
+        self.send_command("R\n")
+
+    def stop(self):
+        self.send_command("S\n")
+
+class ObjectDetector:
+    def __init__(self, confidence_threshold=0.5):
+        """Initialize the TFLite object detector"""
+        model_dir = os.path.join(os.path.dirname(__file__), 'model_files')
+        if not os.path.exists(model_dir):
+            os.makedirs(model_dir)
+            
+        self.model_path = os.path.join(model_dir, 'ssd_mobilenet_v2_coco_quant.tflite')
+        
+        # Initialize TFLite interpreter with num_threads=2 for better performance
+        try:
+            self.interpreter = tflite.Interpreter(
+                model_path=self.model_path,
+                num_threads=2  # Use 2 threads on Raspberry Pi
+            )
+            self.interpreter.allocate_tensors()
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            exit(1)
+
+    # Get model details
+    self.input_details = self.interpreter.get_input_details()
+    self.output_details = self.interpreter.get_output_details()
+    self.input_size = tuple(self.input_details[0]['shape'][1:3])
+    self.confidence_threshold = confidence_threshold
+
+    def _download_model_files(self, model_dir):
+        """Download required model files"""
+        import urllib.request
+        import ssl
+        
+        # Download model
+        model_url = "https://github.com/google-coral/test_data/raw/master/ssd_mobilenet_v2_coco_quant_postprocess.tflite"
+        model_path = os.path.join(model_dir, "ssd_mobilenet_v2_coco_quant.tflite")
+        
+        print("Downloading model...")
+        try:
+            # Create SSL context that ignores certificate verification
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            
+            # Download the file
+            with urllib.request.urlopen(model_url, context=ctx) as response:
+                with open(model_path, 'wb') as f:
+                    f.write(response.read())
+            print("Model downloaded successfully!")
+        
+        except Exception as e:
+            print(f"Error downloading model: {e}")
+            print("Please check your internet connection and try again.")
+            exit(1)
+        
+        # Create labels file
+        labels = [
+            'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train',
+            'truck', 'boat', 'traffic light', 'fire hydrant', 'stop sign',
+            'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep',
+            'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella',
+            'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard',
+            'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard',
+            'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup', 'fork',
+            'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange',
+            'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair',
+            'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv',
+            'laptop', 'mouse', 'remote', 'keyboard', 'cell phone', 'microwave',
+            'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase',
+            'scissors', 'teddy bear', 'hair drier', 'toothbrush'
+        ]
+        
+        with open(os.path.join(model_dir, 'coco_labels.txt'), 'w') as f:
+            f.write('\n'.join(labels))
+            
+    def detect_objects(self, frame):
+        """Perform object detection on a frame"""
+        # Start timing
+        start_time = time.time()
+
+        # Prepare image for model
+        image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        image = cv2.resize(image, self.input_size)
+        image = np.expand_dims(image, axis=0)
+
+        # Run inference
+        self.interpreter.set_tensor(self.input_details[0]['index'], image)
+        self.interpreter.invoke()
+
+        # Get detection results
+        boxes = self.interpreter.get_tensor(self.output_details[0]['index'])[0]
+        classes = self.interpreter.get_tensor(self.output_details[1]['index'])[0]
+        scores = self.interpreter.get_tensor(self.output_details[2]['index'])[0]
+
+        # Calculate FPS
+        inference_time = time.time() - start_time
+        fps = 1.0 / inference_time
+
+        # Process detections
+        detected_objects = []
+        height, width = frame.shape[:2]
+
+        for i in range(len(scores)):
+            if scores[i] > self.confidence_threshold:
+                # Get detection details
+                ymin, xmin, ymax, xmax = boxes[i]
+                xmin = int(xmin * width)
+                xmax = int(xmax * width)
+                ymin = int(ymin * height)
+                ymax = int(ymax * height)
+
+                # Calculate center
+                center_x = (xmin + xmax) // 2
+                center_y = (ymin + ymax) // 2
+
+                # Get class label
+                class_id = int(classes[i])
+                if class_id < len(self.labels):
+                    label = self.labels[class_id]
+                else:
+                    label = f"Class {class_id}"
+
+                # Store detection
+                detected_objects.append({
+                    'label': label,
+                    'confidence': float(scores[i]),
+                    'center': (center_x, center_y),
+                    'box': (xmin, ymin, xmax - xmin, ymax - ymin)
+                })
+
+                # Draw box and label
+                cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
+                cv2.putText(frame, f'{label} {scores[i]:.2f}',
+                           (xmin, ymin - 5), cv2.FONT_HERSHEY_SIMPLEX,
+                           0.5, (0, 255, 0), 2)
+
+        # Display FPS
+        cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+        return frame, detected_objects, fps
+
+def main():
+    parser = argparse.ArgumentParser(description='Real-time Robot Object Avoidance')
+    parser.add_argument('--camera', type=int, default=0,
+                        help='Camera index (default: 0)')
+    parser.add_argument('--serial-port', type=str,
+                        default='/dev/ttyACM0' if os.name != 'nt' else 'COM3',
+                        help='Serial port for Arduino')
+    parser.add_argument('--confidence', type=float, default=0.5,
+                        help='Confidence threshold (0-1)')
+    args = parser.parse_args()
+
+    # Initialize robot controller and object detector
+    robot = RobotController(serial_port=args.serial_port)
+    detector = ObjectDetector(confidence_threshold=args.confidence)
+
+    # Initialize camera with reduced resolution
+    cap = cv2.VideoCapture(args.camera)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    
+    if not cap.isOpened():
+        print(f"Error: Could not open camera {args.camera}")
+        exit(1)
+
+    print("Starting real-time object avoidance system...")
+    print("Press 'q' to quit")
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("Error: Can't receive frame from camera")
+                break
+
+            # Detect objects
+            frame, detections, fps = detector.detect_objects(frame)
+            
+            # Process detections and control robot
+            if detections:
+                # Get the closest/largest object
+                closest_detection = max(detections, 
+                                     key=lambda x: x['box'][2] * x['box'][3])
+                
+                # Calculate relative position
+                frame_center_x = frame.shape[1] / 2
+                object_center_x = closest_detection['center'][0]
+                object_width = closest_detection['box'][2]
+                
+                # Simple proportional control
+                position_error = object_center_x - frame_center_x
+                
+                # Decision making
+                if object_width > frame.shape[1] * 0.4:  # Object too close
+                    print(f"Object too close - Moving backward (FPS: {fps:.1f})")
+                    robot.move_backward()
+                elif abs(position_error) > 50:  # Object significantly off-center
+                    if position_error < 0:
+                        print(f"Object on left - Moving right (FPS: {fps:.1f})")
+                        robot.turn_right()
+                    else:
+                        print(f"Object on left - Moving left (FPS: {fps:.1f})")
+                        robot.turn_left()
+                else:
+                    print(f"Path clear - Moving forward (FPS: {fps:.1f})")
+                    robot.move_forward()
+            else:
+                print(f"No objects detected - Moving forward (FPS: {fps:.1f})")
+                robot.move_forward()
+
+            # Display the frame
+            cv2.imshow('Robot Vision (TFLite)', frame)
+
+            # Break loop on 'q' press
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+
+    except KeyboardInterrupt:
+        print("\nProgram interrupted by user")
+
+    finally:
+        # Clean up
+        robot.stop()
+        robot.serial_conn.close()
+        cap.release()
+        cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()

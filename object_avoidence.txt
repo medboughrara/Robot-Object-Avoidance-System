@@ -1,0 +1,192 @@
+import cv2
+import numpy as np
+import time
+
+# Load YOLOv3 model
+import os
+
+# Define the path to YOLO files
+yolo_path = os.path.join(os.path.dirname(__file__), 'yolo_files')
+cfg_path = os.path.join(yolo_path, 'yolov3.cfg')
+weights_path = os.path.join(yolo_path, 'yolov3.weights')
+names_path = os.path.join(yolo_path, 'coco.names')
+
+# Check if files exist
+for file_path in [cfg_path, weights_path, names_path]:
+    if not os.path.exists(file_path):
+        print(f"Error: Required file not found: {file_path}")
+        exit()
+
+# Load YOLOv3 model
+net = cv2.dnn.readNetFromDarknet(cfg_path, weights_path)
+
+# Load classes file
+classes = []
+with open(names_path, 'r') as f:
+    classes = [line.strip() for line in f]
+
+# Create a blob from the input image
+def blobFromImage(img):
+    # Preprocess the image: resize, scale pixel values, and create 4D blob
+    blob = cv2.dnn.blobFromImage(img, 1/255.0, (416, 416), swapRB=True, crop=False)
+    return blob
+
+# Perform object detection
+def do_object_detection(img, net, classes):
+    # Create blob and set as input
+    blob = blobFromImage(img)
+    net.setInput(blob)
+    
+    # Get output layer names
+    layer_names = net.getLayerNames()
+    output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
+    
+    # Forward pass through the network
+    outputs = net.forward(output_layers)
+    
+    # Get image dimensions
+    height, width, _ = img.shape
+    
+    # Lists to store detected objects
+    boxes = []
+    confidences = []
+    class_ids = []
+    
+    # Process each detection
+    for output in outputs:
+        for detection in output:
+            scores = detection[5:]
+            class_id = np.argmax(scores)
+            confidence = scores[class_id]
+            
+            if confidence > 0.5:  # Confidence threshold
+                # Object detected
+                center_x = int(detection[0] * width)
+                center_y = int(detection[1] * height)
+                w = int(detection[2] * width)
+                h = int(detection[3] * height)
+                
+                # Rectangle coordinates
+                x = int(center_x - w/2)
+                y = int(center_y - h/2)
+                
+                boxes.append([x, y, w, h])
+                confidences.append(float(confidence))
+                class_ids.append(class_id)
+    
+    # Apply non-maximum suppression
+    indexes = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
+    
+    # Draw boxes
+    for i in range(len(boxes)):
+        if i in indexes:
+            x, y, w, h = boxes[i]
+            label = str(classes[class_ids[i]])
+            confidence = confidences[i]
+            
+            # Draw rectangle and label
+            cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            cv2.putText(img, f'{label} {confidence:.2f}', 
+                       (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 
+                       0.5, (0, 255, 0), 2)
+            
+            # Print detection info
+            print(f"Detected {label} with confidence {confidence:.2f}")
+            
+            # Calculate position relative to center of frame
+            object_center_x = x + w/2
+            object_center_y = y + h/2
+            frame_center_x = width/2
+            frame_center_y = height/2
+            
+            # Basic avoidance logic
+            if object_center_x < frame_center_x:
+                print("Object on left - Move right")
+            else:
+                print("Object on right - Move left")
+                
+            if object_center_y < frame_center_y:
+                print("Object above - Move down")
+            else:
+                print("Object below - Move up")
+
+            # The avoidance logic is now handled in the do_object_detection function
+
+
+# Add argument parser for camera selection
+import argparse
+
+def list_available_cameras():
+    """List all available camera devices"""
+    available_cameras = []
+    for i in range(10):  # Check first 10 indexes
+        cap = cv2.VideoCapture(i)
+        if cap.isOpened():
+            ret, _ = cap.read()
+            if ret:
+                available_cameras.append(i)
+            cap.release()
+    return available_cameras
+
+# Parse command line arguments
+parser = argparse.ArgumentParser(description='Object Detection with camera selection')
+parser.add_argument('--camera', type=int, default=0,
+                    help='Camera index (default: 0 for built-in webcam)')
+parser.add_argument('--list-cameras', action='store_true',
+                    help='List all available cameras and exit')
+args = parser.parse_args()
+
+# List available cameras if requested
+if args.list_cameras:
+    cameras = list_available_cameras()
+    if cameras:
+        print("Available cameras:")
+        for cam_idx in cameras:
+            print(f"Camera index {cam_idx}")
+    else:
+        print("No cameras found")
+    exit()
+
+# Initialize the selected camera
+print(f"Attempting to open camera {args.camera}")
+cap = cv2.VideoCapture(args.camera)
+
+# Check if the camera is opened correctly
+if not cap.isOpened():
+    print(f"Error: Could not open camera {args.camera}")
+    print("Available cameras:")
+    cameras = list_available_cameras()
+    if cameras:
+        for cam_idx in cameras:
+            print(f"Camera index {cam_idx}")
+    else:
+        print("No cameras found")
+    exit()
+
+# Main loop
+try:
+    while True:
+        # Capture frame-by-frame
+        ret, frame = cap.read()
+        
+        if not ret:
+            print("Error: Can't receive frame from webcam")
+            break
+
+        # Perform object detection on the frame
+        do_object_detection(frame, net, classes)
+
+        # Display the frame
+        cv2.imshow('YOLO Object Detection', frame)
+
+        # Exit on 'q' key press
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+except KeyboardInterrupt:
+    print("Program interrupted.")
+
+finally:
+    # Release the webcam and close all windows
+    cap.release()
+    cv2.destroyAllWindows()
