@@ -1,0 +1,18 @@
+# Core dependencies
+opencv-python>=4.8.0
+numpy>=1.24.0
+pyserial>=3.5
+Pillow>=10.0.0
+
+# YOLO and Vision
+torch>=2.0.0
+torchvision>=0.15.0
+
+# SAM (Segment Anything Model) - Optional for better segmentation
+# Install separately if needed: pip install git+https://github.com/facebookresearch/segment-anything.git
+
+# For GUI
+pillow>=10.0.0
+
+# Alternative lightweight models if YOLO is too heavy
+# ultralytics>=8.0.0  # For YOLOv8
